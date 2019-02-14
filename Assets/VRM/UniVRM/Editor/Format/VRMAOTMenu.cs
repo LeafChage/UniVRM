@@ -1,9 +1,11 @@
-﻿using System;
+using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
 using UniGLTF;
+using UniJSON;
 using UnityEditor;
 using UnityEngine;
 
@@ -76,31 +78,82 @@ namespace VRM {
             path.ImportAsset();
         }
 
-        static Type GetGenericListValueType(Type t)
+        static bool IsGenericList(Type t)
         {
             if (t.IsGenericType
                 && t.GetGenericTypeDefinition() == typeof(List<>))
             {
-                return t.GetGenericArguments()[0];
+                return true;
             }
             else
             {
-                return null;
+                return false;
             }
         }
 
-        static Type GetGenericDictionaryValueType(Type t)
+        static bool IsGenericDictionary(Type t)
         {
             if (t.IsGenericType
                 && t.GetGenericTypeDefinition() == typeof(Dictionary<,>)
                 && t.GetGenericArguments()[0] == typeof(string))
             {
-                return t.GetGenericArguments()[1];
+                return true;
             }
             else
             {
-                return null;
+                return false;
             }
+        }
+
+        static IEnumerable<Type> GetNestedTypes(Type t)
+        {
+            if (t.DeclaringType == null)
+            {
+                yield break;
+            }
+
+            foreach(var x in GetNestedTypes(t.DeclaringType))
+            {
+                yield return x;
+            }
+
+            yield return t.DeclaringType;
+        }
+
+        static string GenericTypeName(Type t)
+        {
+            if (!t.IsGenericType)
+            {
+                return t.Name;
+            }
+            else
+            {
+                return t.Name.Split('`')[0]
+                    + "<"
+                    + string.Join(",", t.GetGenericArguments().Select(x => GenericTypeName(x)).ToArray())
+                    + ">"
+                    ;
+            }
+        }
+
+        static string GetTypeName(Type t)
+        {
+            var sb = new StringBuilder();
+            if (!string.IsNullOrEmpty(t.Name))
+            {
+                sb.Append(t.Namespace);
+                sb.Append(".");
+            }
+
+            foreach(var x in GetNestedTypes(t))
+            {
+                sb.Append(x.Name);
+                sb.Append(".");
+            }
+
+            sb.Append(GenericTypeName(t));
+
+            return sb.ToString();
         }
 
         static void TraverseType(TextWriter w, Type t, List<Type> excludes)
@@ -114,49 +167,78 @@ namespace VRM {
             w.WriteLine("// $0".Replace("$0", t.Name));
             excludes.Add(t);
 
+            if (t.IsArray)
+            {
+                var valueType = t.GetElementType();
+                w.WriteLine("f.Serialize(default($0[]));".Replace("$0", valueType.Name));
+                w.WriteLine(@"{
+var value = default($0[]);
+default(ListTreeNode<JsonValue>).Deserialize(ref value);
+GenericDeserializer<JsonValue, $0[]>.GenericArrayDeserializer<$0>(default(ListTreeNode<JsonValue>));
+}".Replace("$0", valueType.Name));
+
+                return;
+            }
+
             {
                 // list
-                var valueType = GetGenericListValueType(t);
-                if (valueType != null)
+                if (IsGenericList(t))
                 {
-                    w.WriteLine("f.Serialize(default(List<$0>));".Replace("$0", valueType.Name));
+                    var name = GetTypeName(t.GetGenericArguments()[0]);
+                    w.WriteLine("f.Serialize(default(List<$0>));".Replace("$0", name));
                     w.WriteLine(@"{
 var value = default(List<$0>);
 default(ListTreeNode<JsonValue>).Deserialize(ref value);
-}".Replace("$0", valueType.Name));
+GenericDeserializer<JsonValue, List<$0>>.GenericListDeserializer<$0>(default(ListTreeNode<JsonValue>));
+}"
+.Replace("$0", name)
+);
 
-                    TraverseType(w, valueType, excludes);
+                    TraverseType(w, t.GetGenericArguments()[0], excludes);
+
                     return;
                 }
             }
 
             {
                 // dict
-                var valueType = GetGenericDictionaryValueType(t);
-                if (valueType != null)
+                if (IsGenericDictionary(t))
                 {
-                    w.WriteLine("f.Serialize(default(Dictionary<string, $0>));".Replace("$0", valueType.Name));
+                    var name = GetTypeName(t.GetGenericArguments()[1]);
+                    w.WriteLine("f.Serialize(default(Dictionary<string, $0>));".Replace("$0", name));
                     w.WriteLine(@"{
 var value = default(Dictionary<string, $0>);
 default(ListTreeNode<JsonValue>).Deserialize(ref value);
-}".Replace("$0", valueType.Name));
+GenericDeserializer<JsonValue, Dictionary<string, $0>>.DictionaryDeserializer<$0>(default(ListTreeNode<JsonValue>));
+}".Replace("$0", name));
 
-                    TraverseType(w, valueType, excludes);
+                    TraverseType(w, t.GetGenericArguments()[1], excludes);
                     return;
                 }
             }
 
-            w.WriteLine("f.Serialize(default($0));".Replace("$0", t.Name));
-            w.WriteLine(@"{
+            {
+                var name = GetTypeName(t);
+                w.WriteLine("f.Serialize(default($0));".Replace("$0", name));
+                w.WriteLine(@"{
 var value = default($0);
 default(ListTreeNode<JsonValue>).Deserialize(ref value);
-}".Replace("$0", t.Name));
+}".Replace("$0", name));
+            }
 
             // object
             if (t.IsClass)
             {
                 foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.Instance))
                 {
+                    var fieldTypeName = GetTypeName(fi.FieldType);
+                    w.WriteLine(@"{
+JsonObjectValidator.GenericDeserializer<JsonValue,$0>.DeserializeField<$1>(default(JsonSchema), default(ListTreeNode<JsonValue>));
+}"
+.Replace("$0", GetTypeName(t))
+.Replace("$1", GetTypeName(fi.FieldType))
+);
+
                     TraverseType(w, fi.FieldType, excludes);
                 }
             }
