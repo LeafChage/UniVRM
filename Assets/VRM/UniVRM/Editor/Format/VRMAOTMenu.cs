@@ -40,47 +40,27 @@ namespace VRM {
             var f = new JsonFormatter();
 ");
 
-                    foreach (var t in TraverseType(typeof(glTF), new List<Type>
-                {
-                    typeof(object),
-                    typeof(string),
-                    typeof(bool),
-
-                    typeof(byte),
-                    typeof(ushort),
-                    typeof(uint),
-                    typeof(ulong),
-
-                    typeof(sbyte),
-                    typeof(short),
-                    typeof(int),
-                    typeof(long),
-
-                    typeof(float),
-                    typeof(double),
-
-                    typeof(Vector3),
-                }))
+                    TraverseType(w, typeof(glTF), new List<Type>
                     {
-                        var typeName = t.Name;
-                        var listType = GetGenericListType(t);
-                        if (listType != null)
-                        {
-                            typeName = "List<$0>".Replace("$0", listType.Name);
-                        }
-                        var dictType = GetDictionaryValueType(t);
-                        if (dictType != null)
-                        {
-                            typeName = "Dictionary<string, $0>".Replace("$0", dictType.Name);
-                        }
+                        typeof(object),
+                        typeof(string),
+                        typeof(bool),
 
-                        w.WriteLine("f.Serialize(default($0));".Replace("$0", typeName));
-                        w.WriteLine(@"{
-    var value = default($0);
-    default(ListTreeNode<JsonValue>).Deserialize(ref value);
-}".Replace("$0", typeName));
-                        w.WriteLine();
-                    }
+                        typeof(byte),
+                        typeof(ushort),
+                        typeof(uint),
+                        typeof(ulong),
+
+                        typeof(sbyte),
+                        typeof(short),
+                        typeof(int),
+                        typeof(long),
+
+                        typeof(float),
+                        typeof(double),
+
+                        typeof(Vector3),
+                    });
 
                     w.WriteLine(@"
         }
@@ -96,9 +76,9 @@ namespace VRM {
             path.ImportAsset();
         }
 
-        static Type GetGenericListType(Type t)
+        static Type GetGenericListValueType(Type t)
         {
-            if(t.IsGenericType 
+            if (t.IsGenericType
                 && t.GetGenericTypeDefinition() == typeof(List<>))
             {
                 return t.GetGenericArguments()[0];
@@ -109,7 +89,7 @@ namespace VRM {
             }
         }
 
-        static Type GetDictionaryValueType(Type t)
+        static Type GetGenericDictionaryValueType(Type t)
         {
             if (t.IsGenericType
                 && t.GetGenericTypeDefinition() == typeof(Dictionary<,>)
@@ -123,33 +103,61 @@ namespace VRM {
             }
         }
 
-        static IEnumerable<Type> TraverseType(Type t, List<Type> excludes)
+        static void TraverseType(TextWriter w, Type t, List<Type> excludes)
         {
             if (excludes.Contains(t))
             {
-                yield break;
+                return;
             }
 
-            Debug.LogFormat("{0}", t);
+            w.WriteLine();
+            w.WriteLine("// $0".Replace("$0", t.Name));
             excludes.Add(t);
-            yield return t;
 
-            var listType = GetGenericListType(t);
-            if (listType!=null)
             {
-                foreach (var x in TraverseType(listType, excludes))
+                // list
+                var valueType = GetGenericListValueType(t);
+                if (valueType != null)
                 {
-                    yield return x;
+                    w.WriteLine("f.Serialize(default(List<$0>));".Replace("$0", valueType.Name));
+                    w.WriteLine(@"{
+var value = default(List<$0>);
+default(ListTreeNode<JsonValue>).Deserialize(ref value);
+}".Replace("$0", valueType.Name));
+
+                    TraverseType(w, valueType, excludes);
+                    return;
                 }
             }
-            else
+
+            {
+                // dict
+                var valueType = GetGenericDictionaryValueType(t);
+                if (valueType != null)
+                {
+                    w.WriteLine("f.Serialize(default(Dictionary<string, $0>));".Replace("$0", valueType.Name));
+                    w.WriteLine(@"{
+var value = default(Dictionary<string, $0>);
+default(ListTreeNode<JsonValue>).Deserialize(ref value);
+}".Replace("$0", valueType.Name));
+
+                    TraverseType(w, valueType, excludes);
+                    return;
+                }
+            }
+
+            w.WriteLine("f.Serialize(default($0));".Replace("$0", t.Name));
+            w.WriteLine(@"{
+var value = default($0);
+default(ListTreeNode<JsonValue>).Deserialize(ref value);
+}".Replace("$0", t.Name));
+
+            // object
+            if (t.IsClass)
             {
                 foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.Instance))
                 {
-                    foreach (var x in TraverseType(fi.FieldType, excludes))
-                    {
-                        yield return x;
-                    }
+                    TraverseType(w, fi.FieldType, excludes);
                 }
             }
         }
