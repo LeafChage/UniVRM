@@ -466,6 +466,11 @@ namespace UniGLTF
             LoadAsync(() => onLoaded(Unit.Default), onError);
         }
 
+        public void LoadAsync(Action<ImporterContext> onLoaded, Action<Exception> onError = null)
+        {
+            LoadAsync(() => onLoaded(this), onError);
+        }
+
         public void LoadAsync(Action onLoaded, Action<Exception> onError = null)
         {
             if (onError == null)
